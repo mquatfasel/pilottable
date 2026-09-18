@@ -1,0 +1,16 @@
+{
+  "name": "soul-gastrozentrale",
+  "version": "0.1.0",
+  "description": "SO[U]L Gastrozentrale – Login, Benutzerverwaltung und Abo-Modelle als eigenständige, lauffähige App. Reines Node.js, keine externen Pakete.",
+  "private": true,
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {}
+}
