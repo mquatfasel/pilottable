@@ -103,8 +103,9 @@ SO[U]L Gastrozentrale-Vision. Konkret empfohlen:
    Datenbank-Tabelle eine `tenant_id` bzw. eine strikte Trennung pro
    Betrieb.
 5. **Deployment**: läuft bereits produktiv auf Render, DNS bei Strato
-   (`pilot-table.de`). Für Produktivbetrieb das Cookie in `src/auth.js`
-   (`setSessionCookie`) um `Secure` ergänzen, sobald die App über HTTPS
-   läuft.
+   (`pilottable.de`, CNAME `www` → Render, Domain-Redirect der nackten
+   Domain auf `www.pilottable.de`). Für Produktivbetrieb das Cookie in
+   `src/auth.js` (`setSessionCookie`) um `Secure` ergänzen, sobald die
+   App über HTTPS läuft (ist bei Render standardmäßig der Fall).
 6. Ab hier weiter entlang der Roadmap: Artikelstamm, Rezepturen, HACCP,
    Bankett usw. als weitere Module auf derselben Datenbasis aufbauen.
