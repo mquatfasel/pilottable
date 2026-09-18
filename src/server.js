@@ -1,6 +1,6 @@
 // src/server.js
-// PilotTable – Login, Benutzerverwaltung, Abo-Modelle.
-// Reines Node.js (http, crypto, fs) – keine externen Pakete, kein npm install nötig.
+// PilotTable – Login, Benutzerverwaltung, App-Shell, Abo-Modelle & Stripe-Abrechnung.
+// Reines Node.js (http, crypto, fs, https) – keine externen Pakete, kein npm install nötig.
 
 const http = require('http');
 const fs = require('fs');
@@ -9,10 +9,36 @@ const crypto = require('crypto');
 
 const store = require('./store');
 const auth = require('./auth');
+const billing = require('./billing');
 
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const MAX_BODY_BYTES = 1024 * 1024; // 1 MB Schutz gegen zu große Requests
+const MAX_WEBHOOK_BYTES = 2 * 1024 * 1024; // Stripe-Events sind i.d.R. wenige KB
+
+function baseUrl(req) {
+  if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/$/, '');
+  const proto = req.headers['x-forwarded-proto'] || 'https';
+  return `${proto}://${req.headers.host}`;
+}
+
+function readRawBody(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        reject(Object.assign(new Error('Anfrage zu groß'), { status: 413 }));
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', reject);
+  });
+}
 
 const ROLLEN = [
   'Geschäftsleitung',
@@ -189,6 +215,100 @@ async function handlePlan(req, res) {
   return sendJSON(res, 200, { user: auth.publicUser(updated) });
 }
 
+// ---------- Stripe-Abrechnung ----------
+
+async function handleBillingCheckout(req, res) {
+  const { user } = auth.currentUser(req);
+  if (!user) return sendJSON(res, 401, { error: 'Nicht angemeldet.' });
+
+  let body;
+  try {
+    body = await readJSONBody(req);
+  } catch (e) {
+    return sendJSON(res, e.status || 400, { error: e.message });
+  }
+
+  const plan = String(body.plan || '');
+  if (!['basic', 'professional'].includes(plan)) {
+    return sendJSON(res, 400, { error: 'Für diesen Plan gibt es keine Online-Zahlung. Bitte den Vertrieb kontaktieren.' });
+  }
+
+  try {
+    const session = await billing.createCheckoutSession({ plan, user, baseUrl: baseUrl(req) });
+    return sendJSON(res, 200, { url: session.url });
+  } catch (e) {
+    return sendJSON(res, e.status || 500, { error: e.message });
+  }
+}
+
+async function handleBillingPortal(req, res) {
+  const { user } = auth.currentUser(req);
+  if (!user) return sendJSON(res, 401, { error: 'Nicht angemeldet.' });
+  if (!user.stripeCustomerId) {
+    return sendJSON(res, 400, { error: 'Noch kein Stripe-Kunde vorhanden. Bitte zuerst ein kostenpflichtiges Abo abschließen.' });
+  }
+  try {
+    const session = await billing.createPortalSession({ customerId: user.stripeCustomerId, baseUrl: baseUrl(req) });
+    return sendJSON(res, 200, { url: session.url });
+  } catch (e) {
+    return sendJSON(res, e.status || 500, { error: e.message });
+  }
+}
+
+async function handleStripeWebhook(req, res) {
+  let rawBody;
+  try {
+    rawBody = await readRawBody(req, MAX_WEBHOOK_BYTES);
+  } catch (e) {
+    return sendJSON(res, e.status || 400, { error: e.message });
+  }
+
+  try {
+    billing.verifyWebhookSignature(rawBody, req.headers['stripe-signature'], process.env.STRIPE_WEBHOOK_SECRET);
+  } catch (e) {
+    return sendJSON(res, e.status || 400, { error: e.message });
+  }
+
+  let event;
+  try {
+    event = JSON.parse(rawBody);
+  } catch (e) {
+    return sendJSON(res, 400, { error: 'Ungültiges Event-JSON.' });
+  }
+
+  try {
+    const obj = event.data && event.data.object;
+    if (event.type === 'checkout.session.completed' && obj) {
+      const userId = obj.client_reference_id || (obj.metadata && obj.metadata.pilottable_user_id);
+      const plan = obj.metadata && obj.metadata.plan;
+      if (userId) {
+        await store.updateUser(userId, {
+          plan: plan || undefined,
+          planRequested: false,
+          stripeCustomerId: obj.customer || undefined,
+          stripeSubscriptionId: obj.subscription || undefined,
+          subscriptionStatus: 'active',
+        });
+      }
+    } else if (event.type === 'customer.subscription.updated' && obj) {
+      const existing = store.findUserByStripeCustomerId(obj.customer);
+      if (existing) {
+        await store.updateUser(existing.id, { subscriptionStatus: obj.status });
+      }
+    } else if (event.type === 'customer.subscription.deleted' && obj) {
+      const existing = store.findUserByStripeCustomerId(obj.customer);
+      if (existing) {
+        await store.updateUser(existing.id, { plan: null, subscriptionStatus: 'canceled' });
+      }
+    }
+  } catch (e) {
+    console.error('Stripe-Webhook-Verarbeitung fehlgeschlagen:', e);
+    // Trotzdem 200 zurückgeben, damit Stripe nicht endlos wiederholt; Fehler ist geloggt.
+  }
+
+  return sendJSON(res, 200, { received: true });
+}
+
 // ---------- statische Dateien ----------
 
 function serveStatic(req, res) {
@@ -228,6 +348,9 @@ const server = http.createServer((req, res) => {
     if (urlPath === '/api/auth/logout' && req.method === 'POST') return void handleLogout(req, res);
     if (urlPath === '/api/auth/me' && req.method === 'GET') return void handleMe(req, res);
     if (urlPath === '/api/plan' && req.method === 'POST') return void handlePlan(req, res);
+    if (urlPath === '/api/billing/checkout' && req.method === 'POST') return void handleBillingCheckout(req, res);
+    if (urlPath === '/api/billing/portal' && req.method === 'POST') return void handleBillingPortal(req, res);
+    if (urlPath === '/api/billing/webhook' && req.method === 'POST') return void handleStripeWebhook(req, res);
 
     if (urlPath.startsWith('/api/')) {
       return sendJSON(res, 404, { error: 'Unbekannter Endpunkt.' });
