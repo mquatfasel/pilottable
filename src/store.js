@@ -63,6 +63,12 @@ function findUserById(id) {
   return users.find((u) => u.id === id) || null;
 }
 
+function findUserByStripeCustomerId(customerId) {
+  if (!customerId) return null;
+  const users = getUsers();
+  return users.find((u) => u.stripeCustomerId === customerId) || null;
+}
+
 async function insertUser(user) {
   const users = getUsers();
   if (users.some((u) => u.email === user.email)) {
@@ -118,6 +124,7 @@ module.exports = {
   getUsers,
   findUserByEmail,
   findUserById,
+  findUserByStripeCustomerId,
   insertUser,
   updateUser,
   createSession,
