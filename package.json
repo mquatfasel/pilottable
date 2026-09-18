@@ -1,7 +1,7 @@
 {
-  "name": "soul-gastrozentrale",
+  "name": "pilottable",
   "version": "0.1.0",
-  "description": "SO[U]L Gastrozentrale – Login, Benutzerverwaltung und Abo-Modelle als eigenständige, lauffähige App. Reines Node.js, keine externen Pakete.",
+  "description": "PilotTable – Login, Benutzerverwaltung und Abo-Modelle als eigenständige, lauffähige App. Reines Node.js, keine externen Pakete.",
   "private": true,
   "main": "src/server.js",
   "type": "commonjs",
